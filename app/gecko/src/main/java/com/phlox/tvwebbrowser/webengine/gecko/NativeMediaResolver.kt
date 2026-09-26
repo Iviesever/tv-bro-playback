@@ -1,0 +1,73 @@
+package com.phlox.tvwebbrowser.webengine.gecko
+
+import android.net.Uri
+import androidx.media3.datasource.DataSpec
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+
+object NativeMediaResolver {
+    data class Resolved(val source: MediaRequestCatalog.Request, val context: MediaRequestContext)
+    private val workers = Executors.newFixedThreadPool(2) { runnable -> Thread(runnable, "TVBroMediaResolve").apply { isDaemon = true } }
+
+    fun resolve(source: String, page: String, privateMode: Boolean, userAgent: String, frame: String? = null,
+        result: (Resolved?, String) -> Unit): Future<*> {
+        return workers.submit {
+            var reason = "unresolved-source"
+            val resolved = try {
+                val tab = BrowserMediaBridge.activeTab().get(4, TimeUnit.SECONDS)
+                if (tab != null && (tab.privateMode != privateMode || MediaRequestCatalog.documentKey(tab.page) != MediaRequestCatalog.documentKey(page))) {
+                    throw IOException("Selected tab changed")
+                }
+                val tabId = tab?.id ?: -1
+                val catalog = MediaRequestCatalog.shared
+                var selection = catalog.select(source, page, privateMode, tabId, frame)
+                val probes = when (selection) {
+                    is MediaRequestCatalog.Selection.Resolved -> listOf(selection.request).filter { it.kind != MediaRequestCatalog.Kind.PROGRESSIVE }
+                    is MediaRequestCatalog.Selection.Ambiguous -> selection.candidates
+                    else -> emptyList()
+                }
+                if (probes.size > 8) throw IOException("Ambiguous media sources")
+                val observations = catalog.snapshot(page, privateMode, tabId)
+                for (request in probes) {
+                    if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                    val context = MediaRequestContext(request, observations, userAgent)
+                    val text = readManifest(request.url, context)
+                    val info = ManifestInspector.inspect(request.url, text, request.kind)
+                    catalog.observe(request)
+                    catalog.annotate(request, info.children, info.protectedContent)
+                }
+                selection = catalog.select(source, page, privateMode, tabId, frame)
+                when (selection) {
+                    is MediaRequestCatalog.Selection.Resolved -> Resolved(selection.request,
+                        MediaRequestContext(selection.request, catalog.snapshot(page, privateMode, tabId), userAgent))
+                    is MediaRequestCatalog.Selection.Unavailable -> { reason = selection.reason; null }
+                    is MediaRequestCatalog.Selection.Ambiguous -> { reason = "ambiguous-media-sources"; null }
+                }
+            } catch (error: Exception) {
+                reason = error.javaClass.simpleName
+                if (error is InterruptedException) Thread.currentThread().interrupt()
+                null
+            }
+            GeckoWebEngine.uiHandler.post { result(resolved, reason) }
+        }
+    }
+
+    private fun readManifest(url: String, context: MediaRequestContext): String {
+        val source = ScopedMediaDataSource(context)
+        try {
+            source.open(DataSpec.Builder().setUri(Uri.parse(url)).build())
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (output.size() < 256 * 1024) {
+                if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                val count = source.read(buffer, 0, minOf(buffer.size, 256 * 1024 - output.size()))
+                if (count < 0) return output.toString("UTF-8")
+                output.write(buffer, 0, count)
+            }
+            throw IOException("Media manifest exceeds inspection limit")
+        } finally { source.close() }
+    }
+}
