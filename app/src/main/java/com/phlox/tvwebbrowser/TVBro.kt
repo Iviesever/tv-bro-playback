@@ -60,6 +60,11 @@ class TVBro : Application(), Application.ActivityLifecycleCallbacks {
                 .putBoolean(Config.WEB_ENGINE_DEBUG_KEY, BuildConfig.DEBUG)
                 .apply()
         }
+        if (BuildConfig.TV_PLAYBACK_PROFILE && !BuildConfig.DEBUG &&
+            !preferences.contains("playback_release_initialized")) {
+            preferences.edit().putBoolean("playback_release_initialized", true)
+                .putBoolean(Config.WEB_ENGINE_DEBUG_KEY, false).apply()
+        }
         AppContext.init(this, Config(preferences))
 
         val maxThreadsInOfflineJobsPool = Runtime.getRuntime().availableProcessors()
