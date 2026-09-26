@@ -27,8 +27,38 @@ communicatePort.onMessage.addListener(message => {
 let nativeVideo = null;
 let pendingNativePosition = null;
 function installNativeVideoButton() {
+    const launch = event => {
+        if (!event.isTrusted) return;
+        const video = document.querySelector('video');
+        if (!video || !video.currentSrc || !Number.isFinite(video.currentTime)) return;
+        const url = new URL(video.currentSrc);
+        if (url.protocol !== 'https:' || !url.hostname.endsWith('.cycstream.com') ||
+            !url.pathname.toLowerCase().endsWith('.mp4')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        nativeVideo = video;
+        video.pause();
+        communicatePort.postMessage({type:'nativeVideo', url:video.currentSrc,
+            positionMs:Math.round(video.currentTime * 1000)});
+    };
     const install = () => {
         const video = document.querySelector('video');
+        let launcher = document.querySelector('.tvbro-native-video-launcher');
+        if (!video) {
+            launcher?.remove();
+            return;
+        }
+        if (!launcher) {
+            launcher = document.createElement('button');
+            launcher.className = 'tvbro-native-video-launcher';
+            launcher.type = 'button';
+            launcher.textContent = '原生播放';
+            launcher.setAttribute('aria-label', '使用原生播放器播放此集');
+            launcher.title = '原画质播放，返回键回到网页';
+            launcher.style.cssText = 'position:fixed;top:72px;right:24px;z-index:1000;width:132px;height:42px;border:1px solid #fff8;border-radius:8px;background:#282828;color:white;font-size:16px;cursor:pointer';
+            launcher.addEventListener('click', launch);
+            document.body.append(launcher);
+        }
         if (pendingNativePosition !== null && video && video.readyState >= 1) {
             video.pause();
             video.currentTime = Math.min(pendingNativePosition, video.duration || pendingNativePosition);
@@ -42,20 +72,7 @@ function installNativeVideoButton() {
         button.textContent = '原生播放';
         button.title = '使用原画质播放，返回键回到网页';
         button.style.cssText = 'width:88px;color:white;background:transparent;border:0;font-size:14px;cursor:pointer';
-        button.addEventListener('click', event => {
-            if (!event.isTrusted) return;
-            const video = document.querySelector('video');
-            if (!video || !video.currentSrc || !Number.isFinite(video.currentTime)) return;
-            const url = new URL(video.currentSrc);
-            if (url.protocol !== 'https:' || !url.hostname.endsWith('.cycstream.com') ||
-                !url.pathname.toLowerCase().endsWith('.mp4')) return;
-            event.preventDefault();
-            event.stopPropagation();
-            nativeVideo = video;
-            video.pause();
-            communicatePort.postMessage({type:'nativeVideo', url:video.currentSrc,
-                positionMs:Math.round(video.currentTime * 1000)});
-        });
+        button.addEventListener('click', launch);
         controls.prepend(button);
     };
     // SPA navigation can replace the player; no per-frame work is needed.
