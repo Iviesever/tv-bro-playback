@@ -52,7 +52,7 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     CursorDrawerDelegate.Callback {
     companion object {
         const val ENGINE_NAME = "GeckoView"
-        private const val APP_WEB_EXTENSION_VERSION = 48
+        private const val APP_WEB_EXTENSION_VERSION = 50
         val TAG: String = GeckoWebEngine::class.java.simpleName
         lateinit var runtime: GeckoRuntime
         var appWebExtension = ObservableValue<WebExtension?>(null)
@@ -161,6 +161,11 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     val selectionActionDelegate = MySelectionActionDelegate()
     var appHomeContentScriptPortDelegate: AppHomeContentScriptPortDelegate? = null
     var appContentScriptPortDelegate: AppContentScriptPortDelegate? = null
+    var isForeground = true
+        private set
+    var nativeVideoActive = false
+        private set
+    var pendingNativeVideoPositionMs: Long? = null
     var appWebExtensionBackgroundPortDelegate: AppWebExtensionBackgroundPortDelegate? = null
     private lateinit var webExtObserver: (WebExtension?) -> Unit
 
@@ -385,22 +390,40 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     }
 
     override fun onResume() {
+        isForeground = true
+        if (nativeVideoActive) return
         if (!session.isOpen) {
             session.open(runtime)
             progressDelegate.sessionState?.let {
                 session.restoreState(it)
-            }
+            } ?: url?.let { session.loadUri(it) }
         }
+        session.setActive(true)
         session.setFocused(true)
     }
 
     override fun onPause() {
+        isForeground = false
+        if (!session.isOpen) return
         session.setFocused(false)
         mediaSessionDelegate.mediaSession?.let {
             if (!mediaSessionDelegate.paused) {
                 it.pause()
             }
         }
+    }
+
+    fun suspendForNativeVideo() {
+        nativeVideoActive = true
+        // pause() retains a MediaCodec. Close the saved session before allocating the native codec.
+        // onResume restores its SessionState, including browser history and site storage.
+        if (session.isOpen) session.close()
+    }
+
+    fun resumeFromNativeVideo(positionMs: Long) {
+        pendingNativeVideoPositionMs = positionMs
+        nativeVideoActive = false
+        if (isForeground) onResume()
     }
 
     override fun onUpdateAdblockSetting(newState: Boolean) {
