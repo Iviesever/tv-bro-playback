@@ -107,8 +107,18 @@ class NativeVideoActivity : Activity() {
                 decoder = decoderName
                 Log.i(TAG, "decoder=$decoderName initializationMs=$initializationDurationMs")
             }
+            override fun onAudioUnderrun(eventTime: AnalyticsListener.EventTime,
+                bufferSize: Int, bufferSizeMs: Long, elapsedSinceLastFeedMs: Long) {
+                Log.w(TAG, "audioUnderrun bufferMs=$bufferSizeMs elapsedMs=$elapsedSinceLastFeedMs")
+            }
         })
         p.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                Log.i(TAG, "state=$playbackState positionMs=${p.currentPosition}")
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                Log.i(TAG, "isPlaying=$isPlaying positionMs=${p.currentPosition}")
+            }
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "errorCode=${error.errorCodeName}")
                 AlertDialog.Builder(this@NativeVideoActivity)
