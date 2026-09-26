@@ -10,6 +10,7 @@ android {
         applicationId = "com.phlox.tvwebbrowser"
         versionCode = 69
         versionName = "2.1.6"
+        buildConfigField("Boolean", "TV_PLAYBACK_PROFILE", "false")
 
         javaCompileOptions {
             annotationProcessorOptions {
@@ -58,6 +59,13 @@ android {
 
     flavorDimensions += listOf("appstore", "webengine")
     productFlavors {
+        create("playback") {
+            dimension = "appstore"
+            applicationIdSuffix = ".playback"
+            versionNameSuffix = "-playback.1"
+            buildConfigField("Boolean", "BUILT_IN_AUTO_UPDATE", "false")
+            buildConfigField("Boolean", "TV_PLAYBACK_PROFILE", "true")
+        }
         create("generic") {
             dimension = "appstore"
             buildConfigField("Boolean", "BUILT_IN_AUTO_UPDATE", "true")

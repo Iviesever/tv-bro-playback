@@ -50,7 +50,17 @@ class TVBro : Application(), Application.ActivityLifecycleCallbacks {
 
         instance = this
 
-        AppContext.init(this, Config(getSharedPreferences(MAIN_PREFS_NAME, MODE_MULTI_PROCESS)))
+        val preferences = getSharedPreferences(MAIN_PREFS_NAME, MODE_MULTI_PROCESS)
+        if (BuildConfig.TV_PLAYBACK_PROFILE && !preferences.contains("playback_profile_initialized")) {
+            preferences.edit()
+                .putBoolean("playback_profile_initialized", true)
+                .putString(Config.WEB_ENGINE, Config.ENGINE_GECKO_VIEW)
+                .putString(Config.USER_AGENT_PREF_KEY,
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0")
+                .putBoolean(Config.WEB_ENGINE_DEBUG_KEY, BuildConfig.DEBUG)
+                .apply()
+        }
+        AppContext.init(this, Config(preferences))
 
         val maxThreadsInOfflineJobsPool = Runtime.getRuntime().availableProcessors()
         threadPool = ThreadPoolExecutor(0, maxThreadsInOfflineJobsPool, 20,
