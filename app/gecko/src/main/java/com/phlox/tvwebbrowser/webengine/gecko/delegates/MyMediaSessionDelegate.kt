@@ -9,6 +9,7 @@ import com.phlox.tvwebbrowser.webengine.gecko.NativeVideoActivity
 import com.phlox.tvwebbrowser.webengine.gecko.NativeMediaResolver
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.MediaSession
+import org.mozilla.geckoview.TVBroMediaBridge
 import org.mozilla.gecko.util.GeckoBundle
 import java.util.concurrent.Future
 
@@ -184,6 +185,12 @@ class MyMediaSessionDelegate(private val engine: GeckoWebEngine) : MediaSession.
     }
 
     fun restorePosition(positionMs: Long, resume: Boolean) {
+        val state = browserState
+        if (state != null && engine.session.isOpen) {
+            pendingRestore = null
+            TVBroMediaBridge.restore(engine.session, state, positionMs, resume)
+            return
+        }
         pendingRestore = positionMs to resume
         applyRestore()
     }

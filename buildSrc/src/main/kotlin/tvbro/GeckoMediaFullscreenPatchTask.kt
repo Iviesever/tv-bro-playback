@@ -40,6 +40,22 @@ abstract class GeckoMediaFullscreenPatchTask : DefaultTask() {
             }
             val patched = actor.toString(Charsets.UTF_8)
                 .replace("  handleEvent(aEvent) {", """
+                  async receiveMessage(message) {
+                    if (message.name !== "TVBro:RestoreMedia") return super.receiveMessage?.(message);
+                    const data = message.data;
+                    if (this.document.documentURI !== data.frame) return false;
+                    const fullscreen = lazy.MediaUtils.findMediaElement(this.document.fullscreenElement);
+                    const matches = Array.from(this.document.querySelectorAll("video, audio")).filter(media => media.currentSrc === data.source);
+                    const media = fullscreen?.currentSrc === data.source ? fullscreen : matches.length === 1 ? matches[0] : null;
+                    if (!media) return false;
+                    if (Number.isFinite(data.time) && data.time >= 0) {
+                      media.currentTime = Number.isFinite(media.duration) ? Math.min(data.time, media.duration) : data.time;
+                    }
+                    if (data.resume) await media.play();
+                    else media.pause();
+                    return true;
+                  }
+
                   notifyApplication(aEvent) {
                     const element = this.document.fullscreenElement;
                     if (!element && aEvent.type !== "MozDOMFullscreen:Exited") return;
@@ -82,12 +98,40 @@ abstract class GeckoMediaFullscreenPatchTask : DefaultTask() {
                 "\n" + listOf("playing", "pause", "timeupdate", "seeked", "volumechange", "ratechange", "loadedmetadata", "encrypted")
                     .joinToString("\n") { "                $it: { capture: true, mozSystemGroup: true }," } +
                 registryText.substring(eventsIndex)
+            val controlPath = "modules/GeckoViewMediaControl.sys.mjs"
+            val control = original.getInputStream(requireNotNull(original.getEntry(controlPath))).use { it.readBytes() }
+            val controlDigest = MessageDigest.getInstance("SHA-256").digest(control).joinToString("") { "%02x".format(it) }
+            require(controlDigest == "2286f57209b827d39a51714a23921e9d3075b0f6657ef2dcc22864ac862f0648") {
+                "Gecko media controls changed; review the dormant-media restore adapter"
+            }
+            val patchedControl = control.toString(Charsets.UTF_8)
+                .replace("this.registerListener([", "this.registerListener([\n      \"GeckoView:TVBro:RestoreMedia\",")
+                .replace("    switch (aEvent) {", """
+                    switch (aEvent) {
+                      case "GeckoView:TVBro:RestoreMedia": {
+                        (async () => {
+                          let visited = 0;
+                          const restore = async context => {
+                            if (++visited > 64) return false;
+                            try {
+                              const actor = context.currentWindowGlobal?.getActor("MediaControlDelegate");
+                              if (actor && await actor.sendQuery("TVBro:RestoreMedia", aData)) return true;
+                            } catch (_) { /* A frame navigated or media cannot resume. */ }
+                            for (const child of context.children) if (await restore(child)) return true;
+                            return false;
+                          };
+                          this.eventDispatcher.sendRequest({type:"GeckoView:TVBro:RestoreResult", restored:await restore(this.browser.browsingContext)});
+                        })();
+                        break;
+                      }
+                """.trimIndent())
             ZipOutputStream(output.outputStream().buffered()).use { zip ->
                 original.entries().asSequence().forEach { entry ->
                     zip.putNextEntry(ZipEntry(entry.name).apply { time = 0 })
                     if (!entry.isDirectory) {
                         if (entry.name == actorPath) zip.write(patched)
                         else if (entry.name == registryPath) zip.write(patchedRegistry.toByteArray(Charsets.UTF_8))
+                        else if (entry.name == controlPath) zip.write(patchedControl.toByteArray(Charsets.UTF_8))
                         else if (entry.name.startsWith("defaults/pref/") && entry.name.endsWith("/geckoview-prefs.js")) {
                             original.getInputStream(entry).use { it.copyTo(zip) }
                             // Release scarce TV hardware decoders on pause rather than holding them

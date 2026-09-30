@@ -36,5 +36,18 @@ async function scenario(activateAt, exitAt = Infinity, latePlay = 0) {
   const late = await scenario(12000,Infinity,10000); assert.equal(late.accepted,true);
   const state = slow.snapshots.find(x=>x.enabled);
   assert.equal(state.position,42); assert.equal(state.volume,.4); assert.equal(state.rate,1.25); assert.equal(state.frame,'https://frame.test/player');
-  console.log(JSON.stringify({passed:5,slow:{calls:slow.calls,clock:slow.clock},deadline:never.clock,exit:exit.clock,late:late.clock,readOnlyState:true}));
+  let plays=0, pauses=0;
+  const media={currentSrc:'https://media.test/video',currentTime:0,duration:90,play:async()=>{plays++;},pause:()=>{pauses++;}};
+  class Base {static initLogging(){return {debug(){}};}}
+  const box={GeckoViewActorChild:Base,ChromeUtils:{defineESModuleGetters(o){o.MediaUtils={findMediaElement:e=>e};}}};
+  vm.runInNewContext(source+'\nglobalThis.Actor=MediaControlDelegateChild;',box);
+  const actor=new box.Actor();actor.document={documentURI:'https://frame.test/player',fullscreenElement:null,querySelectorAll:()=>[media]};
+  const request={name:'TVBro:RestoreMedia',data:{frame:'https://frame.test/player',source:media.currentSrc,time:42,resume:true}};
+  assert.equal(await actor.receiveMessage(request),true);assert.equal(media.currentTime,42);assert.equal(plays,1);
+  assert.equal(await actor.receiveMessage({...request,data:{...request.data,frame:'https://other.test/'}}),false);assert.equal(plays,1);
+  actor.document.querySelectorAll=()=>[media,{...media}];
+  assert.equal(await actor.receiveMessage(request),false);
+  actor.document.querySelectorAll=()=>[media];
+  assert.equal(await actor.receiveMessage({...request,data:{...request.data,time:12,resume:false}}),true);assert.equal(media.currentTime,12);assert.equal(pauses,1);
+  console.log(JSON.stringify({passed:9,slow:{calls:slow.calls,clock:slow.clock},deadline:never.clock,exit:exit.clock,late:late.clock,readOnlyState:true,scopedRestore:true}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

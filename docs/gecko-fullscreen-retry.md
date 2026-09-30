@@ -15,7 +15,7 @@ browser implementation code, not a website content script, DOM mutation or injec
 The same browser actor emits read-only state for the actual fullscreen media element. This
 avoids using the global Media Session position, which retained a prior iframe video's time
 in a DASH test. The app uses the element's position, rate, volume, encryption and selected
-text-track state; it never assigns page properties or rewrites the site's player. A small
+text-track state. It does not rewrite the site's player or add DOM controls. A small
 version-pinned adapter in `org.mozilla.geckoview.TVBroMediaBridge` receives these browser
 events. Ordinary pages have no TV Bro content script.
 
@@ -37,7 +37,8 @@ Upstream source: `mobile/android/actors/MediaControlDelegateChild.sys.mjs`, Geck
 
 The actor regression check is `node tools/test-gecko-media-actor.cjs <extracted-actor.mjs>`.
 It exercises delayed activation, the retry deadline, leaving fullscreen, playback starting
-after the deadline, and immutable media state. The catalog tests cover manifest aliases,
+after the deadline, immutable captured state, and source/frame-specific media restoration.
+The catalog tests cover manifest aliases,
 frame/tab/private context and credential scope. Device verification must also wait for
 `seeked`, usable media readiness and absence of HTML errors after returning.
 
@@ -46,3 +47,11 @@ website and suppresses a retry loop for that fullscreen source. A user pause can
 timer. Each playback uses a fresh bandwidth meter: throughput measured on a previous CDN
 or a LAN stream must not select an excessive initial rendition on another website. Adaptive
 streams can change quality with available bandwidth; progressive video retains its source.
+
+A full-episode test also exposed a dormant-controller return failure: after long suspension,
+the SDK's MediaSession controller was inactive and the pending seek could never run. The
+browser's media module now sends a private restore request to the matching browser actor.
+It uses ordinary seek/play/pause media APIs only when both document URI and media source
+match. It can restore after leaving fullscreen, refuses ambiguous elements, and does not
+depend on controller activation. This module is also pinned by source SHA256. The TV test
+must verify returns after longer than the SDK's controller timeout, including natural end.
