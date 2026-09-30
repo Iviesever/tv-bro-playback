@@ -33,6 +33,22 @@ class MediaRequestCatalogTest {
         val result = catalog.select("blob:https://embed.example/123", page, false, 10) as MediaRequestCatalog.Selection.Resolved
         assertEquals("https://cdn.example/a.m3u8", result.request.url)
     }
+    @Test fun sameOriginFramesStillRequireTheActualFullscreenDocument() {
+        val catalog = MediaRequestCatalog()
+        catalog.observe(hls("https://cdn.example/film.m3u8", "https://embed.example/film"))
+        catalog.observe(hls("https://cdn.example/ad.m3u8", "https://embed.example/ad"))
+        val film = catalog.select("blob:https://embed.example/123", page, false, frame = "https://embed.example/film") as MediaRequestCatalog.Selection.Resolved
+        assertEquals("https://cdn.example/film.m3u8", film.request.url)
+        assertTrue(catalog.select("blob:https://embed.example/123", page, false, frame = "https://embed.example/unknown") is MediaRequestCatalog.Selection.Unavailable)
+    }
+    @Test fun privateCredentialsAreNotUsedByTheRegularTab() {
+        val catalog = MediaRequestCatalog()
+        catalog.observe(hls("https://cdn.example/master.m3u8", privateMode = true).copy(headers = mapOf("Cookie" to "private=1"), tabId = 10))
+        assertTrue(catalog.snapshot(page, false, 10).isEmpty())
+        assertTrue(catalog.select("blob:https://embed.example/123", page, false, 10) is MediaRequestCatalog.Selection.Unavailable)
+        val direct = catalog.select("https://cdn.example/master.m3u8", page, false, 10) as MediaRequestCatalog.Selection.Resolved
+        assertTrue(direct.request.headers.isEmpty())
+    }
     @Test fun masterPlaylistWinsOverObservedVariants() {
         val catalog = MediaRequestCatalog()
         val master = hls("https://cdn.example/master.m3u8")
@@ -51,6 +67,17 @@ class MediaRequestCatalogTest {
         assertTrue(catalog.select("blob:https://embed.example/123", page, false) is MediaRequestCatalog.Selection.Unavailable)
         now += 31 * 60 * 1000L
         assertTrue(catalog.snapshot(page, false).isEmpty())
+    }
+    @Test fun redirectedManifestIsAnAliasRatherThanASecondMovie() {
+        val catalog = MediaRequestCatalog()
+        val first = hls("https://origin.example/manifest.m3u8")
+        val final = hls("https://cdn.example/path/master.m3u8")
+        val child = hls("https://cdn.example/path/high.m3u8")
+        listOf(first, final, child).forEach(catalog::observe)
+        catalog.annotate(first, setOf(final.url, child.url), false)
+        catalog.annotate(final, setOf(child.url), false)
+        val result = catalog.select("blob:https://embed.example/123", page, false) as MediaRequestCatalog.Selection.Resolved
+        assertEquals(first.url, result.request.url)
     }
     @Test fun credentialsDoNotCrossOriginsOrObservedDirectory() {
         val media = hls("https://cdn.example/private/master.m3u8").copy(

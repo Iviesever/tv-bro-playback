@@ -18,10 +18,11 @@ object NativeMediaResolver {
             var reason = "unresolved-source"
             val resolved = try {
                 val tab = BrowserMediaBridge.activeTab().get(4, TimeUnit.SECONDS)
-                if (tab != null && (tab.privateMode != privateMode || MediaRequestCatalog.documentKey(tab.page) != MediaRequestCatalog.documentKey(page))) {
+                    ?: throw IOException("Active media tab unavailable")
+                if (tab.privateMode != privateMode || MediaRequestCatalog.documentKey(tab.page) != MediaRequestCatalog.documentKey(page)) {
                     throw IOException("Selected tab changed")
                 }
-                val tabId = tab?.id ?: -1
+                val tabId = tab.id
                 val catalog = MediaRequestCatalog.shared
                 var selection = catalog.select(source, page, privateMode, tabId, frame)
                 val probes = when (selection) {
@@ -34,10 +35,11 @@ object NativeMediaResolver {
                 for (request in probes) {
                     if (Thread.currentThread().isInterrupted) throw InterruptedException()
                     val context = MediaRequestContext(request, observations, userAgent)
-                    val text = readManifest(request.url, context)
-                    val info = ManifestInspector.inspect(request.url, text, request.kind)
+                    val (finalUrl, text) = readManifest(request.url, context)
+                    val info = ManifestInspector.inspect(finalUrl, text, request.kind)
                     catalog.observe(request)
-                    catalog.annotate(request, info.children, info.protectedContent)
+                    val aliases = if (finalUrl != request.url) setOf(finalUrl) else emptySet()
+                    catalog.annotate(request, info.children + aliases, info.protectedContent)
                 }
                 selection = catalog.select(source, page, privateMode, tabId, frame)
                 when (selection) {
@@ -55,16 +57,17 @@ object NativeMediaResolver {
         }
     }
 
-    private fun readManifest(url: String, context: MediaRequestContext): String {
+    private fun readManifest(url: String, context: MediaRequestContext): Pair<String, String> {
         val source = ScopedMediaDataSource(context)
         try {
             source.open(DataSpec.Builder().setUri(Uri.parse(url)).build())
+            val finalUrl = source.uri?.toString() ?: url
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(8192)
             while (output.size() < 256 * 1024) {
                 if (Thread.currentThread().isInterrupted) throw InterruptedException()
                 val count = source.read(buffer, 0, minOf(buffer.size, 256 * 1024 - output.size()))
-                if (count < 0) return output.toString("UTF-8")
+                if (count < 0) return finalUrl to output.toString("UTF-8")
                 output.write(buffer, 0, count)
             }
             throw IOException("Media manifest exceeds inspection limit")
