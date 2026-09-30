@@ -1,5 +1,21 @@
+import tvbro.GeckoMediaFullscreenPatchTask
+
 plugins {
     id("tvbro.android.library")
+}
+
+val geckoAssetSource by configurations.creating {
+    isCanBeResolved = true
+    isCanBeConsumed = false
+    isTransitive = false
+}
+dependencies { add(geckoAssetSource.name, libs.geckoview) }
+val patchedGeckoAssets = tasks.register<GeckoMediaFullscreenPatchTask>("patchGeckoMediaFullscreen") {
+    geckoAar.from(geckoAssetSource)
+    outputDirectory.set(layout.buildDirectory.dir("generated/gecko-media-assets"))
+}
+extensions.getByType<com.android.build.api.variant.LibraryAndroidComponentsExtension>().onVariants { variant ->
+    variant.sources.assets?.addGeneratedSourceDirectory(patchedGeckoAssets) { it.outputDirectory }
 }
 
 android {

@@ -1,7 +1,6 @@
 package com.phlox.tvwebbrowser.webengine.gecko
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -12,35 +11,47 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import androidx.media3.common.MediaItem
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
+import android.net.Uri
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
+import java.util.UUID
 
-/** A bounded-buffer, original-quality alternative for direct MP4 video on older TVs. */
+/** Uses the TV decoder with bounded buffers for HTTP, HLS and DASH media. */
 @UnstableApi
 class NativeVideoActivity : Activity() {
+    enum class ReturnAction { BACK, ENDED, FAILED }
+    data class PlaybackResult(val positionMs: Long, val action: ReturnAction)
+    data class Subtitle(val url: String, val language: String, val label: String)
+    data class PlaybackRequest(val media: NativeMediaResolver.Resolved, val positionMs: Long, val speed: Float,
+        val volume: Float = 1f, val textEnabled: Boolean = false, val textLanguage: String = "",
+        val subtitles: List<Subtitle> = emptyList())
     companion object {
         private const val TAG = "TVBroPlayback"
-        private var onReturn: ((Long) -> Unit)? = null
+        private data class Handoff(val token: String, val request: PlaybackRequest, val callback: (PlaybackResult) -> Unit)
+        private var handoff: Handoff? = null
 
-        fun launch(context: Context, url: String, referer: String, userAgent: String?, position: Long,
-                   callback: (Long) -> Unit) {
-            if (onReturn != null) return
-            onReturn = callback
+        fun launch(context: Context, request: PlaybackRequest,
+                   callback: (PlaybackResult) -> Unit) {
+            check(handoff == null) { "A native playback handoff is already active" }
+            val token = UUID.randomUUID().toString()
+            handoff = Handoff(token, request, callback)
             try {
                 context.startActivity(Intent(context, NativeVideoActivity::class.java)
-                    .putExtra("url", url).putExtra("referer", referer)
-                    .putExtra("userAgent", userAgent).putExtra("position", position)
+                    .putExtra("handoffToken", token)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             } catch (e: Exception) {
-                onReturn = null
+                handoff = null
                 throw e
             }
         }
@@ -51,7 +62,16 @@ class NativeVideoActivity : Activity() {
     private var position = 0L
     private var playWhenReady = true
     private var decoder = ""
+    private var returnAction = ReturnAction.BACK
+    private var request: PlaybackRequest? = null
     private val handler = Handler(Looper.getMainLooper())
+    private val bufferTimeout = Runnable {
+        if (player?.playbackState == Player.STATE_BUFFERING && player?.playWhenReady == true) {
+            Log.w(TAG, "bufferTimeout positionMs=${player?.currentPosition}")
+            returnAction = ReturnAction.FAILED
+            finish()
+        }
+    }
     private val sample = object : Runnable {
         override fun run() {
             player?.let { p ->
@@ -61,6 +81,8 @@ class NativeVideoActivity : Activity() {
                 Log.i(TAG, JSONObject().put("positionMs", p.currentPosition)
                     .put("bufferMs", p.totalBufferedDuration).put("state", p.playbackState)
                     .put("playing", p.isPlaying).put("decoder", decoder)
+                    .put("speed", p.playbackParameters.speed).put("volume", p.volume)
+                    .put("textSelected", p.currentTracks.isTypeSelected(C.TRACK_TYPE_TEXT))
                     .put("width", format?.width).put("height", format?.height)
                     .put("fps", format?.frameRate).put("rendered", counters?.renderedOutputBufferCount)
                     .put("dropped", counters?.droppedBufferCount)
@@ -76,7 +98,9 @@ class NativeVideoActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-        position = savedInstanceState?.getLong("position") ?: intent.getLongExtra("position", 0)
+        request = handoff?.takeIf { it.token == intent.getStringExtra("handoffToken") }?.request
+        if (request == null) { finish(); return }
+        position = savedInstanceState?.getLong("position") ?: request!!.positionMs
         playWhenReady = savedInstanceState?.getBoolean("playWhenReady") ?: true
         playerView = PlayerView(this).apply {
             controllerShowTimeoutMs = 2500
@@ -88,19 +112,20 @@ class NativeVideoActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        val url = intent.getStringExtra("url") ?: run { finish(); return }
-        val http = DefaultHttpDataSource.Factory()
-            .setUserAgent(intent.getStringExtra("userAgent") ?: "TV Bro")
-            .setDefaultRequestProperties(mapOf("Referer" to (intent.getStringExtra("referer") ?: "")))
+        val current = request ?: run { finish(); return }
+        val http = ScopedMediaDataSource.Factory(current.media.context)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(15000, 45000, 1500, 3000)
             .setTargetBufferBytes(24 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(false).build()
         val p = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http))
+            // A fast previous CDN (or LAN stream) says nothing about the next website.
+            .setBandwidthMeter(DefaultBandwidthMeter.Builder(this).build())
             .setLoadControl(loadControl).build()
         player = p
         playerView.player = p
+        p.setAudioAttributes(AudioAttributes.DEFAULT, true)
         p.addAnalyticsListener(object : AnalyticsListener {
             override fun onVideoDecoderInitialized(eventTime: AnalyticsListener.EventTime,
                 decoderName: String, initializedTimestampMs: Long, initializationDurationMs: Long) {
@@ -115,28 +140,52 @@ class NativeVideoActivity : Activity() {
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 Log.i(TAG, "state=$playbackState positionMs=${p.currentPosition}")
+                scheduleBufferTimeout()
+                if (playbackState == Player.STATE_ENDED) {
+                    returnAction = ReturnAction.ENDED
+                    finish()
+                }
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 Log.i(TAG, "isPlaying=$isPlaying positionMs=${p.currentPosition}")
             }
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                scheduleBufferTimeout()
+            }
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(TAG, "errorCode=${error.errorCodeName}")
-                AlertDialog.Builder(this@NativeVideoActivity)
-                    .setMessage("原生播放失败 (${error.errorCodeName})，请返回网页播放。")
-                    .setPositiveButton("返回网页") { _, _ -> finish() }
-                    .setOnCancelListener { finish() }.show()
+                returnAction = ReturnAction.FAILED
+                finish()
             }
         })
-        p.setMediaItem(MediaItem.fromUri(url))
-        p.seekTo(position)
+        val subtitles = current.subtitles.map { subtitle ->
+            MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitle.url))
+                .setMimeType(if (Uri.parse(subtitle.url).path.orEmpty().endsWith(".ttml", true)) MimeTypes.APPLICATION_TTML else MimeTypes.TEXT_VTT)
+                .setLanguage(subtitle.language).setLabel(subtitle.label).setSelectionFlags(C.SELECTION_FLAG_DEFAULT).build()
+        }
+        p.setMediaItem(MediaItem.Builder().setUri(current.media.source.url).setMimeType(current.media.source.kind.mime)
+            .setSubtitleConfigurations(subtitles).build())
+        p.volume = current.volume
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !current.textEnabled)
+            .setPreferredTextLanguage(current.textLanguage.ifEmpty { null }).build()
+        p.setPlaybackSpeed(current.speed)
+        if (position >= 0) p.seekTo(position) else p.seekToDefaultPosition()
         p.prepare()
         p.playWhenReady = playWhenReady
         handler.post(sample)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (!::playerView.isInitialized) return super.dispatchKeyEvent(event)
         if (event.keyCode == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
         return playerView.dispatchKeyEvent(event) || super.dispatchKeyEvent(event)
+    }
+
+    private fun scheduleBufferTimeout() {
+        handler.removeCallbacks(bufferTimeout)
+        if (player?.playbackState == Player.STATE_BUFFERING && player?.playWhenReady == true)
+            handler.postDelayed(bufferTimeout, 15000)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -147,6 +196,7 @@ class NativeVideoActivity : Activity() {
 
     override fun onStop() {
         handler.removeCallbacks(sample)
+        handler.removeCallbacks(bufferTimeout)
         player?.let { p ->
             position = p.currentPosition
             playWhenReady = p.playWhenReady
@@ -159,9 +209,13 @@ class NativeVideoActivity : Activity() {
 
     override fun onDestroy() {
         if (isFinishing) {
-            val callback = onReturn
-            onReturn = null
-            callback?.invoke(position)
+            val current = handoff?.takeIf { it.token == intent.getStringExtra("handoffToken") }
+            if (current != null) {
+                handoff = null
+                val result = PlaybackResult(if (current.request.positionMs < 0) -1 else position, returnAction)
+                // ActivityThread removes the old SurfaceView after onDestroy returns.
+                handler.post { current.callback(result) }
+            }
         }
         super.onDestroy()
     }

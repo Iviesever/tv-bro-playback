@@ -1,6 +1,7 @@
 package com.phlox.tvwebbrowser.webengine.gecko
 
 import android.net.Uri
+import android.util.Log
 import androidx.media3.datasource.DataSpec
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -43,8 +44,11 @@ object NativeMediaResolver {
                 }
                 selection = catalog.select(source, page, privateMode, tabId, frame)
                 when (selection) {
-                    is MediaRequestCatalog.Selection.Resolved -> Resolved(selection.request,
-                        MediaRequestContext(selection.request, catalog.snapshot(page, privateMode, tabId), userAgent))
+                    is MediaRequestCatalog.Selection.Resolved -> {
+                        Log.i("TVBroAutoVideo", "resolved kind=${selection.request.kind} linkedManifests=${selection.request.children.size} observed=${observations.size}")
+                        Resolved(selection.request,
+                            MediaRequestContext(selection.request, catalog.snapshot(page, privateMode, tabId), userAgent))
+                    }
                     is MediaRequestCatalog.Selection.Unavailable -> { reason = selection.reason; null }
                     is MediaRequestCatalog.Selection.Ambiguous -> { reason = "ambiguous-media-sources"; null }
                 }

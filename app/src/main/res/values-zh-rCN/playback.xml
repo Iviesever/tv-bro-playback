@@ -1,0 +1,3 @@
+<resources>
+    <string name="auto_native_fullscreen">自动优化全屏视频（GeckoView）\n沿用网页全屏操作，不支持时继续网页播放</string>
+</resources>

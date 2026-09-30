@@ -38,6 +38,7 @@ class MyContentDelegate(private val webEngine: GeckoWebEngine): GeckoSession.Con
     }
 
     override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+        Log.i("TVBroAutoVideo", "document-fullscreen=$fullScreen")
         if (fullScreen) {
             webEngine.callback?.onPrepareForFullscreen()
         } else {
@@ -112,7 +113,7 @@ class MyContentDelegate(private val webEngine: GeckoWebEngine): GeckoSession.Con
     override fun onCrash(session: GeckoSession) {
         if (!webEngine.isForeground || webEngine.nativeVideoActive) return
         Log.e(TAG, "Crashed, reopening session")
-        session.open(GeckoWebEngine.runtime)
+        webEngine.recoverClosedSession()
     }
 
     override fun onKill(session: GeckoSession) {
@@ -124,12 +125,7 @@ class MyContentDelegate(private val webEngine: GeckoWebEngine): GeckoSession.Con
 
         Log.e(TAG, "Current session killed, reopening")
 
-        webEngine.session.open(GeckoWebEngine.runtime)
-        webEngine.progressDelegate.sessionState?.let {
-            webEngine.session.restoreState(it)
-        } ?: run {
-            webEngine.url?.let { webEngine.session.loadUri(it) }
-        }
+        webEngine.recoverClosedSession()
     }
 
     override fun onFirstComposite(session: GeckoSession) {

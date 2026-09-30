@@ -19,7 +19,6 @@ import com.phlox.tvwebbrowser.webengine.WebEngineFactory
 import com.phlox.tvwebbrowser.webengine.WebEngineProvider
 import com.phlox.tvwebbrowser.webengine.WebEngineProviderCallback
 import com.phlox.tvwebbrowser.webengine.WebEngineWindowProviderCallback
-import com.phlox.tvwebbrowser.webengine.gecko.delegates.AppContentScriptPortDelegate
 import com.phlox.tvwebbrowser.webengine.gecko.delegates.AppHomeContentScriptPortDelegate
 import com.phlox.tvwebbrowser.webengine.gecko.delegates.AppWebExtensionBackgroundPortDelegate
 import com.phlox.tvwebbrowser.webengine.gecko.delegates.MyContentBlockingDelegate
@@ -42,6 +41,8 @@ import org.mozilla.geckoview.GeckoSession.SessionState
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
+import org.mozilla.geckoview.TVBroMediaBridge
+import org.mozilla.gecko.util.BundleEventListener
 import org.mozilla.geckoview.WebExtension.MessageDelegate
 import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
@@ -52,7 +53,7 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     CursorDrawerDelegate.Callback {
     companion object {
         const val ENGINE_NAME = "GeckoView"
-        private const val APP_WEB_EXTENSION_VERSION = 51
+        private const val APP_WEB_EXTENSION_VERSION = 53
         val TAG: String = GeckoWebEngine::class.java.simpleName
         lateinit var runtime: GeckoRuntime
         var appWebExtension = ObservableValue<WebExtension?>(null)
@@ -157,17 +158,17 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     val permissionDelegate = MyPermissionDelegate(this)
     val historyDelegate = MyHistoryDelegate(this)
     val contentBlockingDelegate = MyContentBlockingDelegate(this)
-    val mediaSessionDelegate = MyMediaSessionDelegate()
+    val mediaSessionDelegate = MyMediaSessionDelegate(this)
     val selectionActionDelegate = MySelectionActionDelegate()
     var appHomeContentScriptPortDelegate: AppHomeContentScriptPortDelegate? = null
-    var appContentScriptPortDelegate: AppContentScriptPortDelegate? = null
     var isForeground = true
         private set
     var nativeVideoActive = false
         private set
-    var pendingNativeVideoPositionMs: Long? = null
+    private var suspendMediaBeforeNative = false
     var appWebExtensionBackgroundPortDelegate: AppWebExtensionBackgroundPortDelegate? = null
     private lateinit var webExtObserver: (WebExtension?) -> Unit
+    private val mediaBridge: BundleEventListener
 
     override val url: String?
         get() = navigationDelegate.locationURL
@@ -192,6 +193,7 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
         session.historyDelegate = historyDelegate
         session.contentBlockingDelegate = contentBlockingDelegate
         session.mediaSessionDelegate = mediaSessionDelegate
+        mediaBridge = TVBroMediaBridge.attach(session) { state -> mediaSessionDelegate.onBrowserMediaState(state) }
         session.selectionActionDelegate = selectionActionDelegate
 
         webExtObserver = { ext: WebExtension? ->
@@ -207,22 +209,6 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
 
     private fun connectToAppWebExtension(extension: WebExtension) {
         Log.d(TAG, "connectToAppWebExtension")
-        session.webExtensionController.setMessageDelegate(extension,
-            object : MessageDelegate {
-                override fun onMessage(nativeApp: String, message: Any,
-                                       sender: WebExtension.MessageSender): GeckoResult<Any>? {
-                    Log.d(TAG, "onMessage: $nativeApp, $message, $sender")
-                    return null
-                }
-
-                override fun onConnect(port: WebExtension.Port) {
-                    Log.d(TAG, "onConnect: $port")
-                    appContentScriptPortDelegate = AppContentScriptPortDelegate(port, this@GeckoWebEngine).also {
-                        port.setDelegate(it)
-                    }
-                }
-            }, "tvbro_content"
-        )
         session.webExtensionController.setMessageDelegate(extension,
             object : MessageDelegate {
                 override fun onMessage(nativeApp: String, message: Any,
@@ -392,19 +378,18 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     override fun onResume() {
         isForeground = true
         if (nativeVideoActive) return
-        if (!session.isOpen) {
-            session.open(runtime)
-            progressDelegate.sessionState?.let {
-                session.restoreState(it)
-            } ?: url?.let { session.loadUri(it) }
-        }
+        if (!session.isOpen) recoverClosedSession()
         session.setActive(true)
+        session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        runtime.webExtensionController.setTabActive(session, true)
         session.setFocused(true)
     }
 
     override fun onPause() {
         isForeground = false
+        runtime.webExtensionController.setTabActive(session, false)
         if (!session.isOpen) return
+        if (!nativeVideoActive) session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
         session.setFocused(false)
         mediaSessionDelegate.mediaSession?.let {
             if (!mediaSessionDelegate.paused) {
@@ -414,15 +399,46 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
     }
 
     fun suspendForNativeVideo() {
+        suspendMediaBeforeNative = session.settings.suspendMediaWhenInactive
         nativeVideoActive = true
-        // pause() retains a MediaCodec. Close the saved session before allocating the native codec.
-        // onResume restores its SessionState, including browser history and site storage.
-        if (session.isOpen) session.close()
+        mediaSessionDelegate.mediaSession?.pause()
+        if (session.isOpen) {
+            // Preserve the document and site player. The background recovery guard prevents a
+            // reclaimed tab from reopening another decoder while native playback owns it.
+            session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+            session.settings.suspendMediaWhenInactive = true
+            session.setActive(false)
+        }
     }
 
-    fun resumeFromNativeVideo(positionMs: Long) {
-        pendingNativeVideoPositionMs = positionMs
+    fun recoverClosedSession() {
+        if (session.isOpen || nativeVideoActive || !isForeground || !tab.selected) return
+        val saved = progressDelegate.sessionState
+        val latestUrl = url
+        val savedUrl = runCatching { saved?.get(saved.currentIndex)?.uri }.getOrNull()
+        val view = webView?.takeIf { it.session === session }
+        // A reopened native window needs a fresh GeckoDisplay; retaining the old display leaves
+        // the content viewport at 0x0 and the OS classifies its renderer as a cached process.
+        view?.releaseSession()
+        session.open(runtime)
+        view?.setSession(session)
+        session.setActive(true)
+        session.setFocused(true)
+        session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        runtime.webExtensionController.setTabActive(session, true)
+        if (saved != null && (latestUrl == null || savedUrl == latestUrl)) session.restoreState(saved)
+        else latestUrl?.let { session.loadUri(it) }
+        Log.i("TVBroAutoVideo", "visible-session-restored displayRebound=${view != null}")
+    }
+
+    fun resumeFromNativeVideo(positionMs: Long, resume: Boolean, exitFullscreen: Boolean) {
         nativeVideoActive = false
+        mediaSessionDelegate.restorePosition(positionMs, resume)
+        if (session.isOpen) {
+            session.settings.suspendMediaWhenInactive = suspendMediaBeforeNative
+            session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
+            if (exitFullscreen) session.exitFullScreen()
+        }
         if (isForeground) onResume()
     }
 
@@ -471,10 +487,16 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
         if (previousSession != null && previousSession != session) {
             Log.d(TAG, "Closing previous session")
             previousSession.setActive(false)
+            runtime.webExtensionController.setTabActive(previousSession, false)
             webView.releaseSession()
         }
         webView.coverUntilFirstPaint(Color.WHITE)
         webView.setSession(session)
+        runtime.webExtensionController.setTabActive(session, true)
+        if (session.isOpen) {
+            session.setActive(true)
+            session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        }
         if (session.isOpen && previousSession != null && previousSession != session) {
             Log.d(TAG, "Activating session")
             session.setActive(true)
@@ -491,6 +513,7 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
             if (session == this.session) {
                 Log.d(TAG, "Closing session")
                 session.setActive(false)
+                runtime.webExtensionController.setTabActive(session, false)
                 webView.releaseSession()
             }
         }
@@ -498,6 +521,7 @@ class GeckoWebEngine(val tab: WebTabState): WebEngine,
             this.webView = null
         }
         if (destroyTab) {
+            TVBroMediaBridge.detach(session, mediaBridge)
             Log.d(TAG, "Closing session completely")
             mediaSessionDelegate.mediaSession?.stop()
             session.close()

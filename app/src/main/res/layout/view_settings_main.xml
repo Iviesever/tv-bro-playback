@@ -261,6 +261,16 @@
     </LinearLayout>
   </LinearLayout>
 
+  <androidx.appcompat.widget.SwitchCompat
+      android:id="@+id/scAutoNativeFullscreen"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="20dp"
+      android:paddingTop="8dp"
+      android:paddingBottom="8dp"
+      android:text="@string/auto_native_fullscreen"
+      android:textSize="16sp" />
+
   <LinearLayout
       android:id="@+id/llThemeSettings"
       android:layout_width="match_parent"

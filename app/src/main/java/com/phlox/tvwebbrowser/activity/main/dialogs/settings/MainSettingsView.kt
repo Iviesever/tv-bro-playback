@@ -56,6 +56,11 @@ class MainSettingsView @JvmOverloads constructor(
 
         initAllowAutoplayMediaUI()
 
+        vb.scAutoNativeFullscreen.isChecked = config.autoNativeFullscreen
+        vb.scAutoNativeFullscreen.setOnCheckedChangeListener { _, enabled ->
+            config.autoNativeFullscreen = enabled
+        }
+
         initWebEngineDebugUI()
 
         initKeepScreenOnUI()

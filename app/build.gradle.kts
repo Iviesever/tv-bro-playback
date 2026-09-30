@@ -62,7 +62,8 @@ android {
         create("playback") {
             dimension = "appstore"
             applicationIdSuffix = ".playback"
-            versionNameSuffix = "-playback.1"
+            versionCode = 70
+            versionNameSuffix = "-playback.2"
             buildConfigField("Boolean", "BUILT_IN_AUTO_UPDATE", "false")
             buildConfigField("Boolean", "TV_PLAYBACK_PROFILE", "true")
         }

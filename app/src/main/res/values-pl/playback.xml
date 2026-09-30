@@ -1,0 +1,3 @@
+<resources>
+    <string name="auto_native_fullscreen">Optymalizuj wideo pełnoekranowe (GeckoView)\nAutomatycznie używaj odtwarzacza TV; wróć do strony, gdy jest niedostępny</string>
+</resources>

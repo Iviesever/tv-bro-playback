@@ -51,6 +51,16 @@ class TVBro : Application(), Application.ActivityLifecycleCallbacks {
         instance = this
 
         val preferences = getSharedPreferences(MAIN_PREFS_NAME, MODE_MULTI_PROCESS)
+        if (BuildConfig.TV_PLAYBACK_PROFILE && !preferences.contains("universal_playback_initialized")) {
+            preferences.edit().putBoolean("universal_playback_initialized", true)
+                .putBoolean(Config.AUTO_NATIVE_FULLSCREEN_KEY, true)
+                .putBoolean(Config.WEB_ENGINE_DEBUG_KEY, BuildConfig.DEBUG).apply()
+        }
+        if (BuildConfig.TV_PLAYBACK_PROFILE && !BuildConfig.DEBUG &&
+            !preferences.contains("universal_release_initialized")) {
+            preferences.edit().putBoolean("universal_release_initialized", true)
+                .putBoolean(Config.WEB_ENGINE_DEBUG_KEY, false).apply()
+        }
         if (BuildConfig.TV_PLAYBACK_PROFILE && !preferences.contains("playback_profile_initialized")) {
             preferences.edit()
                 .putBoolean("playback_profile_initialized", true)
