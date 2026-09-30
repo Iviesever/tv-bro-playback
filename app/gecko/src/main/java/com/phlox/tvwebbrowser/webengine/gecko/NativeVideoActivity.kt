@@ -115,7 +115,9 @@ class NativeVideoActivity : Activity() {
         val current = request ?: run { finish(); return }
         val http = ScopedMediaDataSource.Factory(current.media.context)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15000, 45000, 1500, 3000)
+            // The device test exhausted a 15-second low-water mark during a CDN stall.
+            // Hold more compressed media while retaining the same 24 MiB allocator limit.
+            .setBufferDurationsMs(30000, 60000, 1500, 5000)
             .setTargetBufferBytes(24 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(false).build()
         val p = ExoPlayer.Builder(this)
